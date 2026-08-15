@@ -1,40 +1,40 @@
+import hashlib
 import streamlit as st
 import os
+from dotenv import load_dotenv
+
+load_dotenv()  # reads the .env file and loads it into environment variables
+
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "PASTE_YOUR_KEY_HERE")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    st.error("❌ GROQ_API_KEY not found. Please add it to your .env file like this:\n\nGROQ_API_KEY=your_key_here")
+    st.stop()
 
 st.title("📄 PDF Q&A Chatbot")
 st.markdown("""
 <style>
-/* Overall app background */
 .stApp {
     background-color: #FFFFFF;
 }
-
-/* Sidebar */
 [data-testid="stSidebar"] {
     background-color: #1E3A5F;
 }
 [data-testid="stSidebar"] * {
     color: #FFFFFF !important;
 }
-
-/* Page title */
 h1 {
     color: #1E3A5F !important;
 }
-
-/* Subheaders */
 h2, h3 {
     color: #1E3A5F !important;
 }
-
-/* File uploader box */
 [data-testid="stFileUploaderDropzone"] {
     background-color: #FFFFFF;
     border: 2px dashed #2A9D8F;
@@ -43,24 +43,18 @@ h2, h3 {
 [data-testid="stFileUploaderDropzone"] * {
     color: #1E3A5F !important;
 }
-
-/* Chat input box */
 [data-testid="stChatInput"] textarea {
     background-color: #FFFFFF !important;
     color: #1E3A5F !important;
     border-radius: 8px !important;
     border: 2px solid #2A9D8F !important;
 }
-
-/* Text input (login box) */
 .stTextInput input {
     background-color: #FFFFFF !important;
     color: #1E3A5F !important;
     border: 2px solid #2A9D8F !important;
     border-radius: 8px !important;
 }
-
-/* Buttons */
 .stButton button {
     background-color: #2A9D8F !important;
     color: #FFFFFF !important;
@@ -71,8 +65,6 @@ h2, h3 {
 .stButton button:hover {
     background-color: #1E3A5F !important;
 }
-
-/* Chat message bubbles */
 [data-testid="stChatMessage"] {
     background-color: #F1F5F9;
     border-radius: 10px;
@@ -85,6 +77,7 @@ h2, h3 {
 }
 </style>
 """, unsafe_allow_html=True)
+
 # ---- Step 1: Simple Login ----
 if "username" not in st.session_state:
     st.session_state.username = None
@@ -98,7 +91,7 @@ if st.session_state.username is None:
             st.rerun()
         else:
             st.warning("Please enter a name.")
-    st.stop()  # Stops the rest of the app from loading until logged in
+    st.stop()
 
 # ---- Step 2: Set up per-user chat history ----
 if "all_users_messages" not in st.session_state:
@@ -108,7 +101,6 @@ username = st.session_state.username
 if username not in st.session_state.all_users_messages:
     st.session_state.all_users_messages[username] = []
 
-# Shortcut: this user's own messages
 user_messages = st.session_state.all_users_messages[username]
 
 # ---- Sidebar ----
@@ -130,26 +122,33 @@ with st.sidebar:
         st.session_state.all_users_messages[username] = []
         st.rerun()
 
+# ---- Caching function: keyed on file HASH, not filename ----
+@st.cache_resource
+def load_pdf_and_build_search(file_hash, temp_path):
+    loader = PyPDFLoader(temp_path)
+    pages = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = splitter.split_documents(pages)
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vector_db = FAISS.from_documents(chunks, embeddings)
+    return vector_db
+
 # ---- File upload ----
 uploaded_file = st.file_uploader("Upload your PDF", type="pdf")
 
 if uploaded_file is not None:
-    with open("temp_uploaded.pdf", "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    file_bytes = uploaded_file.getbuffer()
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    @st.cache_resource
-    def load_pdf_and_build_search(file_name):
-        loader = PyPDFLoader("temp_uploaded.pdf")
-        pages = loader.load()
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        chunks = splitter.split_documents(pages)
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_db = FAISS.from_documents(chunks, embeddings)
-        return vector_db
+    # Unique filename per file's content — no two different uploads can collide
+    temp_path = f"temp_{file_hash}.pdf"
+
+    if not os.path.exists(temp_path):
+        with open(temp_path, "wb") as f:
+            f.write(file_bytes)
 
     with st.spinner("Reading your PDF..."):
-        vector_db = load_pdf_and_build_search(uploaded_file.name)
-
+        vector_db = load_pdf_and_build_search(file_hash, temp_path)
     st.success("PDF loaded! Ask me anything about it.")
 
     llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.3-70b-versatile")
