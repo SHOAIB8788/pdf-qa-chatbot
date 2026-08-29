@@ -149,9 +149,13 @@ if uploaded_file is not None:
 
     with st.spinner("Reading your PDF..."):
         vector_db = load_pdf_and_build_search(file_hash, temp_path)
+
+    # Clean up: we don't need the temp file anymore once it's been read and processed
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
     st.success("PDF loaded! Ask me anything about it.")
 
-    llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.3-70b-versatile")
+    llm = ChatGroq(api_key=GROQ_API_KEY, model="openai/gpt-oss-120b")
 
     for msg in user_messages:
         with st.chat_message(msg["role"]):
